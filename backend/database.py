@@ -1,47 +1,42 @@
-
+"""MySQL connections for shard nodes and cluster metadata."""
+import os
 import mysql.connector
 from dotenv import load_dotenv
-import os
-
-from metadata_manager import get_node_details
-from metadata_manager import get_active_nodes
 
 load_dotenv()
+USER = os.getenv("MYSQL_USER", "root")
+PASSWORD = os.getenv("MYSQL_ROOT_PASSWORD", "")
 
-USER = "root"
-PASSWORD = os.getenv("MYSQL_ROOT_PASSWORD")
+
+def connect_to_metadata():
+    return mysql.connector.connect(
+        host=os.getenv("METADATA_HOST", "127.0.0.1"),
+        port=int(os.getenv("METADATA_PORT", "3310")), user=USER,
+        password=PASSWORD, database=os.getenv("METADATA_DATABASE", "cluster_metadata"),
+        connection_timeout=4,
+    )
 
 
 def connect_to_shard(shard_name):
-    """
-    Connect to a shard using connection details
-    retrieved from the metadata database.
-    """
-
-    node = get_node_details(shard_name)
-
-    connection = mysql.connector.connect(
-        host=node["host"],
-        port=node["port"],
-        user=USER,
-        password=PASSWORD,
-        database=node["database_name"]
-    )
-
-    return connection
-
-
-if __name__ == "__main__":
-
-    print("===== TESTING DYNAMIC SHARD CONNECTIONS =====")
-
-    shards = get_active_nodes()
-
-    for shard in shards:
-        try:
-            connection = connect_to_shard(shard)
-            print(shard, "connected successfully!")
-            connection.close()
-
-        except Exception as error:
-            print(shard, "connection failed:", error)
+    """Use registered node details, falling back to known local Compose ports."""
+    try:
+        connection = connect_to_metadata()
+        cursor = connection.cursor(dictionary=True)
+        cursor.execute("SELECT host, port, database_name, status FROM shard_nodes WHERE node_name=%s", (shard_name,))
+        node = cursor.fetchone()
+        cursor.close()
+        connection.close()
+    except mysql.connector.Error:
+        node = None
+    if node is not None and node["status"] != "ACTIVE":
+        raise ValueError(f"Shard is inactive: {shard_name}")
+    if node is None:
+        key = shard_name.upper().replace('-', '_')
+        hosts = {"shard1_db": ("127.0.0.1", 3307), "shard2_db": ("127.0.0.1", 3308), "shard3_db": ("127.0.0.1", 3309), "shard4_db": ("127.0.0.1", 3311)}
+        if shard_name not in hosts:
+            raise ValueError(f"Unknown or inactive shard: {shard_name}")
+        host, port = hosts[shard_name]
+        host = os.getenv(f"DB_HOST_{key}", host)
+        port = int(os.getenv(f"DB_PORT_{key}", str(port)))
+        node = {"host": host, "port": port, "database_name": "shard_db"}
+    return mysql.connector.connect(host=node["host"], port=int(node["port"]), user=USER, password=PASSWORD, database=node["database_name"], connection_timeout=3)

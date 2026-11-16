@@ -1,7 +1,7 @@
 
 from shard_config import SHARDING_STRATEGY, SHARD_RANGES
 from consistent_hashing import ConsistentHashRing
-from metadata_manager import get_active_nodes
+from metadata_manager import get_active_nodes, get_all_nodes
 
 
 def hash_sharding(student_id, active_nodes):
@@ -48,10 +48,17 @@ def get_shard(student_id, strategy=None):
     if strategy is None:
         strategy = SHARDING_STRATEGY
 
-    active_nodes = get_active_nodes()
+    nodes = get_all_nodes()
+    if not nodes:
+        raise RuntimeError("No shard nodes are registered")
+    active_nodes = [node["node_name"] for node in nodes]
 
     if strategy == "hash":
-        return hash_sharding(student_id, active_nodes)
+        selected = hash_sharding(student_id, active_nodes)
+        node = next(node for node in nodes if node["node_name"] == selected)
+        if node["status"] != "ACTIVE":
+            raise RuntimeError(f"Shard {selected} assigned to student {student_id} is inactive")
+        return selected
 
     elif strategy == "range":
         return range_sharding(student_id, active_nodes)
