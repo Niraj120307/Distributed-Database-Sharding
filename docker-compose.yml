@@ -8,6 +8,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: shard_db
+      MYSQL_ROOT_HOST: "%"
     ports:
       - "3307:3306"
     volumes:
@@ -21,6 +22,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: shard_db
+      MYSQL_ROOT_HOST: "%"
     ports:
       - "3308:3306"
     volumes:
@@ -34,6 +36,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: shard_db
+      MYSQL_ROOT_HOST: "%"
     ports:
       - "3309:3306"
     volumes:
@@ -48,6 +51,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: shard_db
+      MYSQL_ROOT_HOST: "%"
     ports:
       - "3311:3306"
     volumes:
@@ -61,11 +65,37 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: cluster_metadata
+      MYSQL_ROOT_HOST: "%"
     ports:
       - "3310:3306"
     volumes:
       - metadata_data:/var/lib/mysql
       - ./sql/metadata_init.sql:/docker-entrypoint-initdb.d/metadata_init.sql:ro
+
+  backend:
+    build: ./backend
+    container_name: shardx-api
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      DB_PORT_SHARD1_DB: 3306
+      DB_PORT_SHARD2_DB: 3306
+      DB_PORT_SHARD3_DB: 3306
+      DB_PORT_SHARD4_DB: 3306
+      DB_HOST_SHARD1_DB: shard1
+      DB_HOST_SHARD2_DB: shard2
+      DB_HOST_SHARD3_DB: shard3
+      DB_HOST_SHARD4_DB: shard4
+      METADATA_HOST: metadata
+      METADATA_PORT: 3306
+    ports:
+      - "8000:8000"
+    depends_on:
+      - shard1
+      - shard2
+      - shard3
+      - shard4
+      - metadata
 
 volumes:
   shard1_data:

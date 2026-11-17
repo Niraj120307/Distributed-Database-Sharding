@@ -7,8 +7,8 @@ load_dotenv()
 
 # Metadata database connection details
 METADATA_CONFIG = {
-    "host": "127.0.0.1",
-    "port": 3310,
+    "host": os.getenv("METADATA_HOST", "127.0.0.1"),
+    "port": int(os.getenv("METADATA_PORT", "3310")),
     "user": "root",
     "password": os.getenv("MYSQL_ROOT_PASSWORD"),
     "database": "cluster_metadata"
@@ -89,7 +89,7 @@ def get_node_details(node_name):
     query = """
         SELECT node_name, host, port, database_name, status
         FROM shard_nodes
-        WHERE node_name = %s AND status = 'ACTIVE'
+        WHERE node_name = %s
     """
 
     cursor.execute(query, (node_name,))
@@ -98,7 +98,7 @@ def get_node_details(node_name):
     cursor.close()
     connection.close()
 
-    if node is None:
+    if node is None or node["status"] != "ACTIVE":
         raise ValueError(
             f"Node '{node_name}' does not exist or is inactive"
         )
@@ -175,6 +175,10 @@ if __name__ == "__main__":
 
     print("\n===== TESTING NODE STATUS UPDATE =====")
 
+    register_node("shard1_db", "127.0.0.1", 3307, "shard_db")
+    register_node("shard2_db", "127.0.0.1", 3308, "shard_db")
+    register_node("shard3_db", "127.0.0.1", 3309, "shard_db")
+    register_node("shard4_db", "127.0.0.1", 3311, "shard_db")
     update_node_status("shard2_db", "INACTIVE")
 
     print("\n===== NODES AFTER STATUS UPDATE =====")
@@ -187,10 +191,6 @@ if __name__ == "__main__":
 
     print("\n===== REGISTERING SHARD NODES =====")
 
-    register_node("shard1_db", "127.0.0.1", 3307, "shard_db")
-    register_node("shard2_db", "127.0.0.1", 3308, "shard_db")
-    register_node("shard3_db", "127.0.0.1", 3309, "shard_db")
-    register_node("shard4_db", "127.0.0.1", 3311, "shard_db")
     print("\n===== REGISTERED NODES =====")
 
     for node in get_all_nodes():
