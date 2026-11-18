@@ -1,8 +1,8 @@
+# Consistent hashing : It is a hashing technique that distributes keys and nodes
+# around a circular hash space
 
-# consistent_hashing.py
-
-import hashlib
-import bisect
+import hashlib  #Provides cryptographic hash functions, including SHA-256
+import bisect   #Provides binary-search functionality on sorted lists
 
 
 class ConsistentHashRing:
@@ -19,17 +19,15 @@ class ConsistentHashRing:
 
     # Generate a consistent hash value
     def hash_value(self, key):
-
         key = str(key).encode("utf-8")
 
-        hash_result = hashlib.sha256(key).hexdigest()
+        hash_result = hashlib.sha256(key).hexdigest()  # Calculate SHA-256 hash
 
         return int(hash_result, 16)
 
-    # Add a physical node and its virtual nodes
-    def add_node(self, node):
-
-        for i in range(self.virtual_nodes):
+    # Add a physical node and its virtual nodes        
+    def add_node(self, node):                 # Why virtual nodes? #They help distribute physical node's
+        for i in range(self.virtual_nodes):   #ownership across the hash ring more evenly
 
             virtual_node = f"{node}:VN{i}"
 

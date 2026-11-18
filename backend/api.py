@@ -1,8 +1,10 @@
 """HTTP API used by the existing ShardX browser interface."""
 import os
 import re
+import csv
+import io
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import mysql.connector
@@ -87,6 +89,288 @@ class Student(BaseModel):
     email: str = Field(min_length=3, max_length=100)
     department: str = Field(min_length=1, max_length=50)
 
+
+MAX_CSV_SIZE = 10 * 1024 * 1024  # 10 MB
+
+REQUIRED_CSV_COLUMNS = {
+    "student_id",
+    "name",
+    "email",
+    "department"
+}
+
+
+
+def parse_students_csv(file_content: bytes):
+    """
+    Read and validate CSV records.
+    Does not insert anything into MySQL.
+    """
+
+    try:
+        text = file_content.decode("utf-8-sig")
+
+        # Remove blank lines and whitespace before the header
+        text = text.lstrip("\ufeff\r\n\t ")
+
+        reader = csv.DictReader(io.StringIO(text))
+
+        if not reader.fieldnames:
+            raise HTTPException(400, "CSV file is empty.")
+
+        # Remove accidental spaces around column names
+        reader.fieldnames = [
+            name.strip() if name else name
+            for name in reader.fieldnames
+        ]
+
+        columns = set(reader.fieldnames)
+
+        missing = REQUIRED_CSV_COLUMNS - columns
+
+        if missing:
+            raise HTTPException(
+                400,
+                f"Missing CSV columns: {', '.join(sorted(missing))}"
+            )
+
+        valid_records = []
+        errors = []
+        seen_ids = set()
+
+        for row_number, row in enumerate(reader, start=2):
+            try:
+                student = Student(
+                    student_id=int(row["student_id"]),
+                    name=(row["name"] or "").strip(),
+                    email=(row["email"] or "").strip(),
+                    department=(row["department"] or "").strip()
+                )
+
+                if student.student_id in seen_ids:
+                    raise ValueError(
+                        f"Duplicate student ID {student.student_id} in CSV"
+                    )
+
+                seen_ids.add(student.student_id)
+                valid_records.append(student)
+
+            except Exception as exc:
+                errors.append({
+                    "row": row_number,
+                    "error": str(exc)
+                })
+
+        return valid_records, errors
+
+    except UnicodeDecodeError:
+        raise HTTPException(
+            400,
+            "Please upload a UTF-8 encoded CSV file."
+        )
+
+@app.post("/api/students/bulk-preview")
+async def bulk_preview(file: UploadFile = File(...)):
+
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(400, "Please upload a CSV file.")
+
+    content = await file.read()
+
+    # DEBUG: Check what the API receives
+    print("========== CSV PREVIEW DEBUG ==========", flush=True)
+    print("Filename:", file.filename, flush=True)
+    print("Received file size:", len(content), flush=True)
+    print("Received content:", repr(content[:200]), flush=True)
+
+    if len(content) > MAX_CSV_SIZE:
+        raise HTTPException(413, "CSV file must be 10 MB or smaller.")
+
+    records, errors = parse_students_csv(content)
+
+    distribution = {}
+
+    for student in records:
+        shard = get_shard(student.student_id)
+        distribution[shard] = distribution.get(shard, 0) + 1
+
+    return {
+        "total_valid": len(records),
+        "total_invalid": len(errors),
+        "preview": [
+            student.model_dump()
+            for student in records[:10]
+        ],
+        "errors": errors[:50],
+        "shard_distribution": distribution
+    }
+
+
+
+@app.post("/api/students/bulk-import")
+async def bulk_import(file: UploadFile = File(...)):
+
+    # Check file extension
+    if not file.filename or not file.filename.lower().endswith(".csv"):
+        raise HTTPException(400, "Please upload a CSV file.")
+
+    # Read CSV file
+
+    content = await file.read()
+
+    if len(content) > MAX_CSV_SIZE:
+        raise HTTPException(413, "CSV file must be 10 MB or smaller.")
+
+
+    # Validate CSV records
+    records, errors = parse_students_csv(content)
+
+    if not records:
+        raise HTTPException(
+            400,
+            detail={
+                "message": "No valid student records found.",
+                "errors": errors[:50]
+            }
+        )
+
+    # Distribute records according to shard
+    shard_records = {}
+
+    for student in records:
+        shard = get_shard(student.student_id)
+        shard_records.setdefault(shard, []).append(student)
+
+    inserted = 0
+    skipped = 0
+    shard_results = {}
+
+    # Insert records shard by shard
+    for shard, students in shard_records.items():
+
+        connection = None
+        cursor = None
+
+        try:
+            connection = connect_to_shard(shard)
+            cursor = connection.cursor()
+
+            shard_inserted = 0
+            shard_skipped = 0
+            batch_size = 500
+
+            # Process records in batches
+            for start in range(0, len(students), batch_size):
+
+                batch = students[start:start + batch_size]
+
+                student_ids = [s.student_id for s in batch]
+                placeholders = ",".join(["%s"] * len(student_ids))
+
+                # Check which student IDs already exist
+                cursor.execute(
+                    f"""
+                    SELECT student_id
+                    FROM students
+                    WHERE student_id IN ({placeholders})
+                    """,
+                    tuple(student_ids)
+                )
+
+                existing_ids = {
+                    row[0] for row in cursor.fetchall()
+                }
+
+                new_students = [
+                    s for s in batch
+                    if s.student_id not in existing_ids
+                ]
+
+                shard_skipped += len(existing_ids)
+
+                # Insert only new students
+                if new_students:
+                    values = [
+                        (
+                            s.student_id,
+                            s.name,
+                            s.email,
+                            s.department
+                        )
+                        for s in new_students
+                    ]
+
+                    cursor.executemany(
+                        """
+                        INSERT INTO students
+                        (student_id, name, email, department)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        values
+                    )
+
+                    shard_inserted += len(new_students)
+
+            # Commit this shard's records
+            connection.commit()
+
+            inserted += shard_inserted
+            skipped += shard_skipped
+
+            shard_results[shard] = {
+                "inserted": shard_inserted,
+                "skipped": shard_skipped,
+                "status": "SUCCESS"
+            }
+
+        except Exception as exc:
+
+            if connection:
+                connection.rollback()
+
+            shard_results[shard] = {
+                "inserted": 0,
+                "skipped": 0,
+                "status": "FAILED",
+                "error": str(exc)
+            }
+
+        finally:
+            if cursor:
+                cursor.close()
+
+            if connection:
+                connection.close()
+
+    # Identify failed shards
+    failed_shards = [
+        name
+        for name, result in shard_results.items()
+        if result["status"] == "FAILED"
+    ]
+
+    # Record bulk import operation in metadata database
+    record_operation(
+        "BULK_IMPORT",
+        (
+            f"Inserted: {inserted}, "
+            f"Skipped: {skipped}, "
+            f"Invalid: {len(errors)}"
+        ),
+        "FAILED" if failed_shards else "SUCCESS"
+    )
+
+    # Return import summary
+    return {
+        "message": "Bulk import completed.",
+        "total_valid": len(records),
+        "inserted": inserted,
+        "skipped": skipped,
+        "invalid": len(errors),
+        "failed_shards": failed_shards,
+        "shard_results": shard_results,
+        "errors": errors[:50]
+    }
 
 def db_error(exc):
     if isinstance(exc, mysql.connector.Error):

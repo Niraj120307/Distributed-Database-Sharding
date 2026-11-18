@@ -99,7 +99,21 @@ services:
 
 volumes:
   shard1_data:
+    external: true
+    name: distributed-database-sharding_shard1_data
+
   shard2_data:
+    external: true
+    name: distributed-database-sharding_shard2_data
+
   shard3_data:
+    external: true
+    name: distributed-database-sharding_shard3_data
+
   shard4_data:
+    external: true
+    name: distributed-database-sharding_shard4_data
+
   metadata_data:
+    external: true
+    name: distributed-database-sharding_metadata_data

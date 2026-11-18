@@ -2,7 +2,17 @@ import { useEffect, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { api, clusterService, testApiBase } from './services/api.js'
 
-const pages = [['Overview', '/'], ['Nodes', '/nodes'], ['Shards', '/shards'], ['Query Console', '/query'], ['Data Explorer', '/data'], ['Replication', '/replication'], ['Migrations', '/migrations'], ['Settings', '/settings']]
+const pages = [
+  ['Overview', '/'],
+  ['Nodes', '/nodes'],
+  ['Shards', '/shards'],
+  ['Query Console', '/query'],
+  ['Data Explorer', '/data'],
+  ['Bulk Import', '/bulk-import'],
+  ['Replication', '/replication'],
+  ['Migrations', '/migrations'],
+  ['Settings', '/settings']
+]
 const titles = Object.fromEntries(pages)
 const initialUrl = localStorage.getItem('shardx-api-url') || import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'
 const initialInterval = localStorage.getItem('shardx-refresh-interval') || '0'
@@ -48,6 +58,265 @@ function DataExplorer() {
   async function remove(id) { if (!window.confirm(`Delete student ${id}?`)) return; try { await clusterService.deleteStudent(id); reload(); setNotice(`Student ${id} deleted.`) } catch (err) { setNotice(err.response?.data?.detail || err.message) } }
   return <><PageHeading title="Data Explorer">Browse and manage student records stored in the shard databases.</PageHeading><ErrorNote error={error}/><div className="section-title"><h2>Student records</h2></div><DataTable headers={['ID', 'Name', 'Email', 'Department', 'Shard', 'Action']}>{data?.items?.map(s => <tr key={s.student_id}><td>{s.student_id}</td><td>{s.name}</td><td>{s.email}</td><td>{s.department}</td><td>{s.shard}</td><td><button className="button" onClick={() => edit(s)}>Edit</button> <button className="button" onClick={() => remove(s.student_id)}>Delete</button></td></tr>) || <EmptyRow columns={6}/>}</DataTable><p className="page-note">{data ? `${data.total} record(s)` : 'Loading records…'}</p><div className="section-title"><h2>Add student</h2></div><form className="settings-form" onSubmit={save}>{[['student_id','Student ID','number'],['name','Name','text'],['email','Email','email'],['department','Department','text']].map(([key,label,type])=><label key={key} className="field-label" htmlFor={`student-${key}`}>{label}<input required min={type==='number' ? 1 : undefined} type={type} className="text-input" id={`student-${key}`} value={form[key]} onChange={e=>setForm({...form,[key]:e.target.value})}/></label>)}<button className="button button-primary" type="submit">Add student</button></form>{notice && <p className="page-note" role="status">{notice}</p>}</>
 }
+
+function BulkImport() {
+  const [file, setFile] = useState(null)
+  const [preview, setPreview] = useState(null)
+  const [result, setResult] = useState(null)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  function selectFile(event) {
+    const selected = event.target.files?.[0] || null
+    setFile(selected)
+    setPreview(null)
+    setResult(null)
+    setError('')
+  }
+
+  async function handlePreview() {
+    if (!file) {
+      setError('Please select a CSV file first.')
+      return
+    }
+
+    setBusy(true)
+    setError('')
+    setResult(null)
+
+    try {
+      const data = await clusterService.bulkPreview(file)
+      setPreview(data)
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'CSV preview failed.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleImport() {
+    if (!file || !preview) return
+
+    setBusy(true)
+    setError('')
+
+    try {
+      const data = await clusterService.bulkImport(file)
+      setResult(data)
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || 'CSV import failed.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <PageHeading title="Bulk Import">
+        Upload a CSV file to validate student records and distribute them across the four MySQL shards.
+      </PageHeading>
+
+      <div className="settings-form">
+        <label className="field-label" htmlFor="csv-file">
+          Select CSV file
+        </label>
+
+        <input
+          id="csv-file"
+          className="text-input"
+          type="file"
+          accept=".csv,text/csv"
+          onChange={selectFile}
+        />
+
+        <p className="field-help">
+          Required columns: student_id, name, email, department. Maximum file size: 10 MB.
+        </p>
+
+        {file && (
+          <p className="page-note">
+            Selected: {file.name} ({(file.size / 1024).toFixed(2)} KB)
+          </p>
+        )}
+
+        <div className="form-actions">
+          <button
+            className="button button-primary"
+            type="button"
+            onClick={handlePreview}
+            disabled={!file || busy}
+          >
+            {busy ? 'Please wait...' : 'Preview CSV'}
+          </button>
+
+          <button
+            className="button"
+            type="button"
+            onClick={() => {
+              setFile(null)
+              setPreview(null)
+              setResult(null)
+              setError('')
+              document.getElementById('csv-file').value = ''
+            }}
+            disabled={busy}
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+
+      <ErrorNote error={error} />
+
+      {preview && (
+        <>
+          <div className="section-title">
+            <h2>CSV Validation Summary</h2>
+          </div>
+
+          <div className="stats-table">
+            <table>
+              <tbody>
+                <tr>
+                  <th>Valid records</th>
+                  <td>{preview.total_valid}</td>
+                </tr>
+                <tr>
+                  <th>Invalid records</th>
+                  <td>{preview.total_invalid}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div className="section-title">
+            <h2>Shard Distribution</h2>
+          </div>
+
+          <DataTable headers={['Shard', 'Records to process']}>
+            {Object.entries(preview.shard_distribution || {}).map(([shard, count]) => (
+              <tr key={shard}>
+                <td>{shard}</td>
+                <td>{count}</td>
+              </tr>
+            ))}
+          </DataTable>
+
+          <div className="section-title">
+            <h2>Student Preview</h2>
+          </div>
+
+          <DataTable headers={['Student ID', 'Name', 'Email', 'Department']}>
+            {preview.preview?.length
+              ? preview.preview.map(student => (
+                  <tr key={student.student_id}>
+                    <td>{student.student_id}</td>
+                    <td>{student.name}</td>
+                    <td>{student.email}</td>
+                    <td>{student.department}</td>
+                  </tr>
+                ))
+              : <EmptyRow columns={4}>No valid records to preview.</EmptyRow>}
+          </DataTable>
+
+          {preview.errors?.length > 0 && (
+            <>
+              <div className="section-title">
+                <h2>Validation Errors</h2>
+              </div>
+
+              <DataTable headers={['CSV Row', 'Error']}>
+                {preview.errors.map((item, index) => (
+                  <tr key={index}>
+                    <td>{item.row}</td>
+                    <td>{item.error}</td>
+                  </tr>
+                ))}
+              </DataTable>
+            </>
+          )}
+
+          <div className="form-actions">
+            <button
+              className="button button-primary"
+              type="button"
+              onClick={handleImport}
+              disabled={busy || preview.total_valid === 0}
+            >
+              {busy ? 'Importing...' : 'Import Valid Records'}
+            </button>
+          </div>
+        </>
+      )}
+
+      {result && (
+        <>
+          <div className="section-title">
+            <h2>Import Results</h2>
+          </div>
+
+          <div className="stats-table">
+            <table>
+              <tbody>
+                <tr>
+                  <th>Inserted</th>
+                  <td>{result.inserted}</td>
+                </tr>
+                <tr>
+                  <th>Skipped duplicates</th>
+                  <td>{result.skipped}</td>
+                </tr>
+                <tr>
+                  <th>Invalid records</th>
+                  <td>{result.invalid}</td>
+                </tr>
+                <tr>
+                  <th>Failed shards</th>
+                  <td>{result.failed_shards?.length || 0}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div className="section-title">
+            <h2>Shard Import Details</h2>
+          </div>
+
+          <DataTable headers={['Shard', 'Inserted', 'Skipped', 'Status']}>
+            {Object.entries(result.shard_results || {}).map(([shard, details]) => (
+              <tr key={shard}>
+                <td>{shard}</td>
+                <td>{details.inserted}</td>
+                <td>{details.skipped}</td>
+                <td>{details.status}</td>
+              </tr>
+            ))}
+          </DataTable>
+
+          {result.errors?.length > 0 && (
+            <>
+              <div className="section-title">
+                <h2>Import Errors</h2>
+              </div>
+              <DataTable headers={['Error']}>
+                {result.errors.map((item, index) => (
+                  <tr key={index}>
+                    <td>{typeof item === 'string' ? item : JSON.stringify(item)}</td>
+                  </tr>
+                ))}
+              </DataTable>
+            </>
+          )}
+
+          <p className="page-note" role="status">
+            {result.message}
+          </p>
+        </>
+      )}
+    </>
+  )
+}
+
 function Replication() { const { data, error } = useLoad(clusterService.getReplication); return <><PageHeading title="Replication">Replication configuration read from the cluster metadata database.</PageHeading><ErrorNote error={error}/><DataTable headers={['Primary node', 'Replica node', 'Status', 'Last synchronized']}><EmptyRow columns={4}>{data?.enabled ? 'Replication is enabled; no replication event history is recorded.' : 'Replication is disabled. Horizontal shard placement stores each primary record on its assigned shard.'}</EmptyRow></DataTable></> }
 function Migrations() { const { data, error } = useLoad(clusterService.getMigrations); return <><PageHeading title="Migrations">Persisted shard rebalancing history.</PageHeading><ErrorNote error={error}/><DataTable headers={['Migration ID', 'Strategy', 'Status', 'Records transferred']}>{data?.map(m=><tr key={m.job_id}><td>{m.job_id}</td><td>{m.strategy}</td><td>{m.status}</td><td>{m.records_migrated} / {m.records_to_move}</td></tr>) || <EmptyRow columns={4}/>}</DataTable></> }
 function Settings({ apiUrl, setApiUrl, interval, setInterval, onSaved, status, check, checking, checkMessage }) {
@@ -62,5 +331,5 @@ export default function App() {
   useEffect(() => { const seconds = Number(interval); if (!seconds) return undefined; const timer = window.setInterval(check, seconds*1000); return () => window.clearInterval(timer) }, [apiUrl,interval])
   function saveSettings() { setIntervalValue(localStorage.getItem('shardx-refresh-interval') || '0'); setCheckMessage('Settings saved in this browser.') }
   const currentTitle = titles[location.pathname] || 'Overview'
-  return <div className="app-layout"><aside className="sidebar"><div className="app-name">ShardX</div><nav aria-label="Main navigation">{pages.map(([label,path])=><NavLink key={path} to={path} end={path==='/'} className={({isActive})=>`nav-link${isActive?' active':''}`}>{label}</NavLink>)}</nav></aside><main className="main-content"><header className="topbar"><span className="topbar-app">ShardX</span><span className="topbar-separator">/</span><span>{currentTitle}</span><span className="topbar-status"><i className={`status-indicator ${status==='Connected'?'status-ok':'status-off'}`}/>{status}</span></header><section className="content"><Routes><Route path="/" element={<Overview check={check} checking={checking}/>}/><Route path="/nodes" element={<Nodes/>}/><Route path="/shards" element={<Shards/>}/><Route path="/query" element={<QueryConsole/>}/><Route path="/data" element={<DataExplorer/>}/><Route path="/replication" element={<Replication/>}/><Route path="/migrations" element={<Migrations/>}/><Route path="/settings" element={<Settings apiUrl={apiUrl} setApiUrl={setApiUrl} interval={interval} setInterval={setIntervalValue} onSaved={saveSettings} status={status} check={check} checking={checking} checkMessage={checkMessage}/>}/><Route path="*" element={<Navigate to="/" replace/>}/></Routes></section></main></div>
+  return <div className="app-layout"><aside className="sidebar"><div className="app-name">ShardX</div><nav aria-label="Main navigation">{pages.map(([label,path])=><NavLink key={path} to={path} end={path==='/'} className={({isActive})=>`nav-link${isActive?' active':''}`}>{label}</NavLink>)}</nav></aside><main className="main-content"><header className="topbar"><span className="topbar-app">ShardX</span><span className="topbar-separator">/</span><span>{currentTitle}</span><span className="topbar-status"><i className={`status-indicator ${status==='Connected'?'status-ok':'status-off'}`}/>{status}</span></header><section className="content"><Routes><Route path="/" element={<Overview check={check} checking={checking}/>}/><Route path="/nodes" element={<Nodes/>}/><Route path="/shards" element={<Shards/>}/><Route path="/query" element={<QueryConsole/>}/><Route path="/data" element={<DataExplorer/>}/><Route path="/bulk-import" element={<BulkImport/>}/><Route path="/replication" element={<Replication/>}/><Route path="/migrations" element={<Migrations/>}/><Route path="/settings" element={<Settings apiUrl={apiUrl} setApiUrl={setApiUrl} interval={interval} setInterval={setIntervalValue} onSaved={saveSettings} status={status} check={check} checking={checking} checkMessage={checkMessage}/>}/><Route path="*" element={<Navigate to="/" replace/>}/></Routes></section></main></div>
 }

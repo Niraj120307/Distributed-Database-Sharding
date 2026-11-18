@@ -39,26 +39,26 @@ def consistent_sharding(student_id, active_nodes):
 def get_shard(student_id, strategy=None):
     """Select a shard using the chosen strategy."""
 
-    if not isinstance(student_id, int) or isinstance(student_id, bool):
+    if not isinstance(student_id, int) or isinstance(student_id, bool):  #code explicitly rejects Boolean values
         raise ValueError("Student ID must be an integer")
 
     if student_id <= 0:
         raise ValueError("Student ID must be positive")
 
-    if strategy is None:
-        strategy = SHARDING_STRATEGY
+    if strategy is None:              #If the caller does not provide strategy,
+        strategy = SHARDING_STRATEGY  # fun uses def defined in shard_config.py
 
-    nodes = get_all_nodes()
+    nodes = get_all_nodes()     #fetch registered nodes from metadata db
     if not nodes:
         raise RuntimeError("No shard nodes are registered")
     active_nodes = [node["node_name"] for node in nodes]
 
-    if strategy == "hash":
-        selected = hash_sharding(student_id, active_nodes)
+    if strategy == "hash":  # As we know we are using hash sharding here
+        selected = hash_sharding(student_id, active_nodes)  #Calculates destination using modulo
         node = next(node for node in nodes if node["node_name"] == selected)
-        if node["status"] != "ACTIVE":
+        if node["status"] != "ACTIVE":  #If selected node is inactive, it raises an error
             raise RuntimeError(f"Shard {selected} assigned to student {student_id} is inactive")
-        return selected
+        return selected   # Fun returns logical shard name
 
     elif strategy == "range":
         return range_sharding(student_id, active_nodes)
